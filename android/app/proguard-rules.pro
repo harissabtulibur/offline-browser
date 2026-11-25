@@ -1,0 +1,4 @@
+-keep class com.offlinecyberdeck.core.model.** { *; }
+-keep class com.offlinecyberdeck.core.settings.BackupPayload { *; }
+-keep class com.offlinecyberdeck.core.database.entity.** { *; }
+-dontwarn org.jsoup.**
