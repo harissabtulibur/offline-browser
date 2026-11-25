@@ -1,17 +1,26 @@
 package com.offlinecyberdeck
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
+import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Download
@@ -22,6 +31,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
@@ -29,18 +39,28 @@ import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.offlinecyberdeck.archive.ArchiveReaderScreen
@@ -51,6 +71,7 @@ import com.offlinecyberdeck.browser.BrowserViewModel
 import com.offlinecyberdeck.core.database.entity.AppSettingsEntity
 import com.offlinecyberdeck.core.model.LibraryFileType
 import com.offlinecyberdeck.core.model.MainDestination
+import com.offlinecyberdeck.core.model.ThemeMode
 import com.offlinecyberdeck.downloads.DownloadsScreen
 import com.offlinecyberdeck.library.LibraryScreen
 import com.offlinecyberdeck.library.PdfViewerScreen
@@ -60,6 +81,8 @@ import com.offlinecyberdeck.media.MediaVaultScreen
 import com.offlinecyberdeck.search.UnifiedSearchScreen
 import com.offlinecyberdeck.settings.SettingsScreen
 import com.offlinecyberdeck.ui.theme.CyberDeckTheme
+import com.offlinecyberdeck.ui.theme.DeckGreen
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private sealed interface OverlayReader {
@@ -73,10 +96,19 @@ class MainActivity : ComponentActivity() {
 
     private var pendingExternalUrl by mutableStateOf<String?>(null)
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         handleIncomingIntent(intent)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
 
         val app = application as CyberDeckApplication
         setContent {
@@ -92,11 +124,62 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            CyberDeckTheme(themeMode = settings.themeMode) {
-                CyberDeckRootShell(
-                    app = app,
-                    browserViewModel = browserVm
+            val isDarkNow = when (settings.themeMode) {
+                ThemeMode.DARK -> true
+                ThemeMode.LIGHT -> false
+                ThemeMode.SYSTEM -> isSystemInDarkTheme()
+            }
+
+            LaunchedEffect(
+                settings.immersiveFullscreen,
+                settings.brightnessOverrideEnabled,
+                settings.screenBrightnessPercent,
+                isDarkNow
+            ) {
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                controller.isAppearanceLightStatusBars = !isDarkNow
+                controller.isAppearanceLightNavigationBars = !isDarkNow
+                controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                if (settings.immersiveFullscreen) {
+                    controller.hide(WindowInsetsCompat.Type.systemBars())
+                } else {
+                    controller.show(WindowInsetsCompat.Type.systemBars())
+                }
+                val lp = window.attributes
+                lp.screenBrightness = if (settings.brightnessOverrideEnabled) {
+                    (settings.screenBrightnessPercent.coerceIn(10, 100) / 100f).coerceIn(0.05f, 1f)
+                } else {
+                    WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                }
+                window.attributes = lp
+            }
+
+            LaunchedEffect(settings.developerModeEnabled, settings.webViewDebuggingEnabled) {
+                WebView.setWebContentsDebuggingEnabled(
+                    settings.developerModeEnabled && settings.webViewDebuggingEnabled
                 )
+            }
+
+            CyberDeckTheme(
+                themeMode = settings.themeMode,
+                accentPreset = settings.accentPreset,
+                uiFontScale = settings.uiFontScale
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    CyberDeckRootShell(
+                        app = app,
+                        browserViewModel = browserVm,
+                        settings = settings
+                    )
+                    if (settings.nightDimmerPercent > 0) {
+                        val alpha = (settings.nightDimmerPercent.coerceIn(0, 65) / 100f) * 0.85f
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = alpha))
+                        )
+                    }
+                }
             }
         }
     }
@@ -119,7 +202,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun CyberDeckRootShell(
     app: CyberDeckApplication,
-    browserViewModel: BrowserViewModel
+    browserViewModel: BrowserViewModel,
+    settings: AppSettingsEntity
 ) {
     var currentDest by remember { mutableStateOf(MainDestination.BROWSER) }
     var libraryInitialTab by remember { mutableIntStateOf(0) }
@@ -129,6 +213,8 @@ private fun CyberDeckRootShell(
     val scope = rememberCoroutineScope()
     val config = LocalConfiguration.current
     val useRail = config.screenWidthDp >= 720
+    val hideNavChrome = overlay != null ||
+        (currentDest == MainDestination.BROWSER && settings.hideNavChromeInBrowser)
 
     LaunchedEffect(Unit) {
         browserViewModel.snackbarEvents.collect { msg ->
@@ -195,12 +281,13 @@ private fun CyberDeckRootShell(
     )
 
     Scaffold(
-        modifier = Modifier.fillMaxSize().safeDrawingPadding(),
+        modifier = Modifier
+            .fillMaxSize()
+            .let { if (settings.immersiveFullscreen) it else it.safeDrawingPadding() },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            if (!useRail && overlay == null) {
+            if (!useRail && !hideNavChrome) {
                 NavigationBar {
-                    // Keep primary bottom items concise on narrow portrait phones
                     val compactItems = listOf(
                         MainDestination.BROWSER to Icons.Filled.Public,
                         MainDestination.LIBRARY to Icons.Filled.MenuBook,
@@ -227,7 +314,7 @@ private fun CyberDeckRootShell(
         }
     ) { innerPadding ->
         Row(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            if (useRail && overlay == null) {
+            if (useRail && !hideNavChrome) {
                 NavigationRail {
                     navItems.forEach { (dest, icon) ->
                         NavigationRailItem(
@@ -293,6 +380,7 @@ private fun CyberDeckRootShell(
                                     },
                                     onOpenBookmarks = { currentDest = MainDestination.BOOKMARKS },
                                     onOpenHistory = { currentDest = MainDestination.HISTORY },
+                                    onOpenSettings = { currentDest = MainDestination.SETTINGS },
                                     onShowMessage = showMessage
                                 )
                             }
@@ -342,6 +430,32 @@ private fun CyberDeckRootShell(
                         MainDestination.SETTINGS -> {
                             SettingsScreen(app = app, onShowMessage = showMessage)
                         }
+                    }
+                }
+
+                if (settings.developerModeEnabled && settings.showDevHud) {
+                    var heapUsedMb by remember { mutableLongStateOf(0L) }
+                    LaunchedEffect(Unit) {
+                        while (true) {
+                            val rt = Runtime.getRuntime()
+                            heapUsedMb = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L)
+                            delay(1500L)
+                        }
+                    }
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.72f),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(8.dp)
+                    ) {
+                        Text(
+                            text = "DEV • ${config.screenWidthDp}x${config.screenHeightDp}dp • WV:${browserViewModel.webViewPool.getLiveCount()} • RAM:${heapUsedMb}MB • ${currentDest.label}",
+                            color = DeckGreen,
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
                     }
                 }
             }

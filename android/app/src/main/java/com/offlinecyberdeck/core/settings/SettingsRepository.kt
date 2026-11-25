@@ -12,6 +12,7 @@ import com.offlinecyberdeck.core.database.entity.BookmarkEntity
 import com.offlinecyberdeck.core.database.entity.LibraryItemEntity
 import com.offlinecyberdeck.core.database.entity.MediaItemEntity
 import com.offlinecyberdeck.core.database.entity.PlaylistEntity
+import com.offlinecyberdeck.core.database.entity.PlaylistMediaCrossRef
 import com.offlinecyberdeck.core.model.StorageDashboardStats
 import com.offlinecyberdeck.core.storage.DeckDriveManager
 import kotlinx.coroutines.Dispatchers
@@ -30,7 +31,8 @@ data class CyberDeckBackupPayload(
     val archivedPages: List<ArchivedPageEntity> = emptyList(),
     val libraryItems: List<LibraryItemEntity> = emptyList(),
     val mediaItems: List<MediaItemEntity> = emptyList(),
-    val playlists: List<PlaylistEntity> = emptyList()
+    val playlists: List<PlaylistEntity> = emptyList(),
+    val playlistLinks: List<PlaylistMediaCrossRef> = emptyList()
 )
 
 class SettingsRepository(
@@ -87,7 +89,8 @@ class SettingsRepository(
                     archivedPages = db.archiveDao().getAllSnapshot(),
                     libraryItems = db.libraryDao().getAllSnapshot(),
                     mediaItems = db.mediaDao().getAllSnapshot(),
-                    playlists = db.mediaDao().observePlaylists().first()
+                    playlists = db.mediaDao().observePlaylists().first(),
+                    playlistLinks = db.mediaDao().getAllPlaylistCrossRefs()
                 )
                 val json = gson.toJson(payload)
                 context.contentResolver.openOutputStream(targetUri)?.use { out ->
@@ -114,6 +117,7 @@ class SettingsRepository(
             payload.libraryItems.forEach { db.libraryDao().upsert(it) }
             payload.mediaItems.forEach { db.mediaDao().upsert(it) }
             payload.playlists.forEach { db.mediaDao().upsertPlaylist(it) }
+            payload.playlistLinks.forEach { db.mediaDao().addToPlaylist(it) }
             "Restored ${payload.bookmarks.size} bookmarks, ${payload.archivedPages.size} archives, ${payload.libraryItems.size} vault items, ${payload.mediaItems.size} media records"
         }
     }

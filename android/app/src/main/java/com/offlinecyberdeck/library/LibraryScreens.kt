@@ -7,7 +7,10 @@ import android.os.ParcelFileDescriptor
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,6 +30,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.OpenInBrowser
@@ -54,6 +58,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,8 +66,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -430,6 +443,7 @@ fun PdfViewerScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val scope = rememberCoroutineScope()
     var item by remember { mutableStateOf<LibraryItemEntity?>(null) }
     var pageCount by remember { mutableIntStateOf(0) }
@@ -437,6 +451,29 @@ fun PdfViewerScreen(
     var pageBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var errorText by remember { mutableStateOf<String?>(null) }
     var rendererHolder by remember { mutableStateOf<Pair<ParcelFileDescriptor, PdfRenderer>?>(null) }
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var offsetY by remember { mutableFloatStateOf(0f) }
+    var nightInvertMode by remember { mutableStateOf(false) }
+
+    val invertColorFilter = remember {
+        ColorFilter.colorMatrix(
+            ColorMatrix(
+                floatArrayOf(
+                    -1f, 0f, 0f, 0f, 255f,
+                    0f, -1f, 0f, 0f, 255f,
+                    0f, 0f, -1f, 0f, 255f,
+                    0f, 0f, 0f, 1f, 0f
+                )
+            )
+        )
+    }
+
+    DisposableEffect(view) {
+        val prev = view.keepScreenOn
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = prev }
+    }
 
     LaunchedEffect(itemId) {
         val loaded = app.database.libraryDao().getById(itemId)
@@ -463,6 +500,9 @@ fun PdfViewerScreen(
     }
 
     LaunchedEffect(rendererHolder, currentPage) {
+        scale = 1f
+        offsetX = 0f
+        offsetY = 0f
         val pair = rendererHolder ?: return@LaunchedEffect
         val renderer = pair.second
         if (renderer.pageCount <= 0) return@LaunchedEffect
@@ -470,8 +510,8 @@ fun PdfViewerScreen(
         val bmp = withContext(Dispatchers.IO) {
             renderer.openPage(safePage).use { page ->
                 val targetWidth = 1080
-                val scale = targetWidth.toFloat() / page.width.coerceAtLeast(1)
-                val targetHeight = (page.height * scale).toInt().coerceAtLeast(1)
+                val ratio = targetWidth.toFloat() / page.width.coerceAtLeast(1)
+                val targetHeight = (page.height * ratio).toInt().coerceAtLeast(1)
                 val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
                 bitmap.eraseColor(android.graphics.Color.WHITE)
                 page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
@@ -511,6 +551,13 @@ fun PdfViewerScreen(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
+                IconButton(onClick = { nightInvertMode = !nightInvertMode }) {
+                    Icon(
+                        Icons.Filled.Contrast,
+                        contentDescription = "Night Invert PDF",
+                        tint = if (nightInvertMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 IconButton(
                     onClick = { if (currentPage > 0) currentPage-- },
                     enabled = currentPage > 0
@@ -530,23 +577,60 @@ fun PdfViewerScreen(
             }
         }
 
-        Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clipToBounds()
+                .background(if (nightInvertMode) Color.Black else MaterialTheme.colorScheme.background),
+            contentAlignment = Alignment.Center
+        ) {
             val bmp = pageBitmap
             if (errorText != null) {
                 Text(errorText!!, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(24.dp))
             } else if (bmp != null) {
-                Column(
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = "PDF Page ${currentPage + 1}",
+                    contentScale = ContentScale.Fit,
+                    colorFilter = if (nightInvertMode) invertColorFilter else null,
                     modifier = Modifier
                         .fillMaxSize()
-                        .verticalScroll(rememberScrollState()),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = "PDF Page ${currentPage + 1}",
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+                        .pointerInput(currentPage) {
+                            detectTapGestures(
+                                onDoubleTap = {
+                                    if (scale > 1.05f) {
+                                        scale = 1f
+                                        offsetX = 0f
+                                        offsetY = 0f
+                                    } else {
+                                        scale = 2.0f
+                                    }
+                                }
+                            )
+                        }
+                        .pointerInput(currentPage) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                val newScale = (scale * zoom).coerceIn(1f, 3.5f)
+                                scale = newScale
+                                if (newScale > 1.02f) {
+                                    val maxX = (size.width * (newScale - 1f)) / 2f
+                                    val maxY = (size.height * (newScale - 1f)) / 2f
+                                    offsetX = (offsetX + pan.x).coerceIn(-maxX, maxX)
+                                    offsetY = (offsetY + pan.y).coerceIn(-maxY, maxY)
+                                } else {
+                                    offsetX = 0f
+                                    offsetY = 0f
+                                }
+                            }
+                        }
+                        .graphicsLayer(
+                            scaleX = scale,
+                            scaleY = scale,
+                            translationX = offsetX,
+                            translationY = offsetY
+                        )
+                )
             } else {
                 Text("Rendering page...")
             }
@@ -560,8 +644,15 @@ fun TextDocumentReaderScreen(
     itemId: String,
     onBack: () -> Unit
 ) {
+    val view = LocalView.current
     var title by remember { mutableStateOf("Document Reader") }
     var body by remember { mutableStateOf("Loading...") }
+
+    DisposableEffect(view) {
+        val prev = view.keepScreenOn
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = prev }
+    }
 
     LaunchedEffect(itemId) {
         val loaded = app.database.libraryDao().getById(itemId)

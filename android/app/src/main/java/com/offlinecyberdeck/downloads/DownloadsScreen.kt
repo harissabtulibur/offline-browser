@@ -299,7 +299,8 @@ private fun DownloadCard(
             val sizeLine = buildString {
                 append(Formatters.formatBytes(item.bytesDownloaded))
                 if (item.totalBytes > 0L) {
-                    append(" / ${Formatters.formatBytes(item.totalBytes)}")
+                    val pct = ((item.bytesDownloaded * 100L) / item.totalBytes).coerceIn(0L, 100L)
+                    append(" / ${Formatters.formatBytes(item.totalBytes)} ($pct%)")
                 } else {
                     append(" / Size unknown")
                 }

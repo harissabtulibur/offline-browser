@@ -71,7 +71,7 @@ object Formatters {
         return if (searchTemplate.contains("%s")) {
             searchTemplate.replace("%s", encoded)
         } else {
-            "https://duckduckgo.com/?q=$encoded"
+            "https://www.google.com/search?q=$encoded"
         }
     }
 

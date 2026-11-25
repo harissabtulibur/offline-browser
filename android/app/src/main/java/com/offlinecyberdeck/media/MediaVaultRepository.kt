@@ -61,6 +61,15 @@ class MediaVaultRepository(
         }
     }
 
+    private data class ExtractedLocalMediaInfo(
+        val durationMs: Long,
+        val thumbPath: String?,
+        val embeddedTitle: String?,
+        val channelName: String?,
+        val generatedDescription: String,
+        val generatedTags: String
+    )
+
     suspend fun scanSafFolderForMedia(treeUri: Uri): Result<Int> = withContext(Dispatchers.IO) {
         runCatching {
             runCatching {
@@ -72,17 +81,17 @@ class MediaVaultRepository(
             val root = DocumentFile.fromTreeUri(context, treeUri)
                 ?: error("Cannot access selected folder")
             var count = 0
-            val queue = ArrayDeque<DocumentFile>()
-            queue.add(root)
+            val queue = ArrayDeque<Pair<DocumentFile, String>>()
+            queue.add(root to (root.name ?: "Local Folder"))
             var visitedDirs = 0
             while (queue.isNotEmpty() && visitedDirs < 150) {
-                val dir = queue.removeFirst()
+                val (dir, folderLabel) = queue.removeFirst()
                 visitedDirs++
                 for (child in dir.listFiles()) {
                     if (child.isDirectory) {
-                        queue.add(child)
+                        queue.add(child to (child.name ?: folderLabel))
                     } else if (child.isFile && isSupportedMediaFile(child.name.orEmpty())) {
-                        if (ingestMediaUri(child.uri)) count++
+                        if (ingestMediaUri(child.uri, folderHint = folderLabel)) count++
                     }
                 }
             }
@@ -90,7 +99,7 @@ class MediaVaultRepository(
         }
     }
 
-    private suspend fun ingestMediaUri(uri: Uri): Boolean {
+    private suspend fun ingestMediaUri(uri: Uri, folderHint: String? = null): Boolean {
         val uriStr = uri.toString()
         val existingByUri = mediaDao.findByLocalUri(uriStr)
         if (existingByUri != null) return false
@@ -98,10 +107,12 @@ class MediaVaultRepository(
         val (fileName, sizeBytes) = driveManager.queryDisplayNameAndSize(uri)
         val cleanTitle = cleanTitleFromFileName(fileName)
         val extractedVideoId = extractVideoIdFromString(fileName)
-        val (durationMs, thumbPath) = extractMediaMetadataAndThumb(uri, fileName)
         val storageTarget = if (uriStr.contains("external", ignoreCase = true) ||
             uri.authority?.contains("externalstorage") == true
         ) StorageTarget.DECK_DRIVE else StorageTarget.INTERNAL
+        val extracted = extractMediaMetadataAndThumb(uri, fileName, sizeBytes, storageTarget, folderHint)
+        val resolvedTitle = extracted.embeddedTitle?.takeIf { it.isNotBlank() } ?: cleanTitle
+        val resolvedChannel = extracted.channelName ?: folderHint ?: "Local Library"
 
         // Attempt match against existing metadata-only entries
         val allItems = mediaDao.getAllSnapshot().filter { it.localFileUri.isNullOrBlank() }
@@ -114,7 +125,7 @@ class MediaVaultRepository(
         }
         if (bestMatch == null) {
             for (candidate in allItems) {
-                val score = titleSimilarity(cleanTitle, candidate.title)
+                val score = titleSimilarity(resolvedTitle, candidate.title)
                 if (score > bestScore && score >= 0.45f) {
                     bestScore = score
                     bestMatch = candidate
@@ -127,9 +138,12 @@ class MediaVaultRepository(
                 bestMatch.copy(
                     localFileUri = uriStr,
                     localFileName = fileName,
-                    durationMs = if (durationMs > 0L) durationMs else bestMatch.durationMs,
+                    channel = bestMatch.channel.ifBlank { resolvedChannel },
+                    description = bestMatch.description.ifBlank { extracted.generatedDescription },
+                    tags = bestMatch.tags.ifBlank { extracted.generatedTags },
+                    durationMs = if (extracted.durationMs > 0L) extracted.durationMs else bestMatch.durationMs,
                     sizeBytes = sizeBytes.coerceAtLeast(0L),
-                    thumbnailPath = thumbPath ?: bestMatch.thumbnailPath,
+                    thumbnailPath = extracted.thumbPath ?: bestMatch.thumbnailPath,
                     storageTarget = storageTarget,
                     matchConfidence = bestScore,
                     matchConfirmed = bestScore >= 0.99f
@@ -141,16 +155,19 @@ class MediaVaultRepository(
         mediaDao.upsert(
             MediaItemEntity(
                 id = UUID.randomUUID().toString(),
-                title = cleanTitle,
+                title = resolvedTitle,
+                channel = resolvedChannel,
                 videoId = extractedVideoId,
-                thumbnailPath = thumbPath,
+                description = extracted.generatedDescription,
+                thumbnailPath = extracted.thumbPath,
                 localFileUri = uriStr,
                 localFileName = fileName,
-                durationMs = durationMs,
+                durationMs = extracted.durationMs,
                 sizeBytes = sizeBytes.coerceAtLeast(0L),
                 storageTarget = storageTarget,
                 matchConfidence = 1.0f,
-                matchConfirmed = true
+                matchConfirmed = true,
+                tags = extracted.generatedTags
             )
         )
         return true
@@ -228,14 +245,17 @@ class MediaVaultRepository(
                 }
                 val item = mediaDao.getById(metadataId) ?: error("Metadata record not found")
                 val (fileName, size) = driveManager.queryDisplayNameAndSize(localFileUri)
-                val (durationMs, thumbPath) = extractMediaMetadataAndThumb(localFileUri, fileName)
+                val extracted = extractMediaMetadataAndThumb(localFileUri, fileName, size, item.storageTarget, null)
                 mediaDao.upsert(
                     item.copy(
                         localFileUri = localFileUri.toString(),
                         localFileName = fileName,
-                        durationMs = if (durationMs > 0L) durationMs else item.durationMs,
+                        channel = item.channel.ifBlank { extracted.channelName ?: "Local Library" },
+                        description = item.description.ifBlank { extracted.generatedDescription },
+                        tags = item.tags.ifBlank { extracted.generatedTags },
+                        durationMs = if (extracted.durationMs > 0L) extracted.durationMs else item.durationMs,
                         sizeBytes = size.coerceAtLeast(0L),
-                        thumbnailPath = thumbPath ?: item.thumbnailPath,
+                        thumbnailPath = extracted.thumbPath ?: item.thumbnailPath,
                         matchConfidence = 1.0f,
                         matchConfirmed = true
                     )
@@ -274,6 +294,9 @@ class MediaVaultRepository(
     }
 
     suspend fun deleteMediaItem(item: MediaItemEntity) {
+        item.thumbnailPath?.let { path ->
+            runCatching { File(path).delete() }
+        }
         mediaDao.delete(item)
     }
 
@@ -326,31 +349,93 @@ class MediaVaultRepository(
         }
     }
 
-    private fun extractMediaMetadataAndThumb(uri: Uri, fileName: String): Pair<Long, String?> {
+    private fun extractMediaMetadataAndThumb(
+        uri: Uri,
+        fileName: String,
+        sizeBytes: Long,
+        storageTarget: StorageTarget,
+        folderHint: String?
+    ): ExtractedLocalMediaInfo {
         val retriever = MediaMetadataRetriever()
+        val ext = fileName.substringAfterLast('.', "").lowercase(Locale.US)
         return try {
             retriever.setDataSource(context, uri)
             val durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
             val durationMs = durStr?.toLongOrNull() ?: 0L
+            val embeddedTitle = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)?.trim()
+            val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)?.trim()
+                ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_AUTHOR)?.trim()
+                ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST)?.trim()
+            val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+            val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+            val bitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull()
+            val mime = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)?.trim()
+            val date = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE)?.trim()
+
             var thumbPath: String? = null
-            val isAudioOnly = fileName.substringAfterLast('.', "").lowercase() in
-                setOf("mp3", "m4a", "ogg", "opus", "wav", "flac")
+            val isAudioOnly = ext in setOf("mp3", "m4a", "ogg", "opus", "wav", "flac")
             if (!isAudioOnly) {
-                val frame = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                val captureUs = if (durationMs > 4000L) {
+                    minOf(durationMs / 4L, 3000L) * 1000L
+                } else {
+                    500_000L
+                }
+                val frame = retriever.getFrameAtTime(captureUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 if (frame != null) {
-                    val scaled = Bitmap.createScaledBitmap(frame, 320, 180, true)
+                    val scaled = Bitmap.createScaledBitmap(frame, 480, 270, true)
                     if (scaled != frame) frame.recycle()
                     val thumbFile = File(driveManager.internalThumbnailsDir, "${UUID.randomUUID()}.jpg")
                     thumbFile.outputStream().use { out ->
-                        scaled.compress(Bitmap.CompressFormat.JPEG, 75, out)
+                        scaled.compress(Bitmap.CompressFormat.JPEG, 78, out)
                     }
                     scaled.recycle()
                     thumbPath = thumbFile.absolutePath
                 }
             }
-            durationMs to thumbPath
+
+            val resolutionStr = if (width != null && height != null && width > 0 && height > 0) {
+                "${width}x${height} (${height}p)"
+            } else null
+
+            val bitrateStr = if (bitrate != null && bitrate > 0L) {
+                String.format(Locale.US, "%.1f Mbps", bitrate / 1_000_000.0)
+            } else null
+
+            val generatedDesc = buildString {
+                appendLine("Local offline media file: $fileName")
+                append("Storage: ${storageTarget.label}")
+                if (sizeBytes > 0L) append(" • Size: ${com.offlinecyberdeck.core.format.Formatters.formatBytes(sizeBytes)}")
+                appendLine()
+                if (resolutionStr != null) append("Resolution: $resolutionStr")
+                if (bitrateStr != null) append(if (resolutionStr != null) " • Bitrate: $bitrateStr" else "Bitrate: $bitrateStr")
+                if (mime != null) append(" • Format: $mime")
+                if (!date.isNullOrBlank()) append("\nRecorded/Tagged: $date")
+            }.trim()
+
+            val tagParts = mutableListOf<String>()
+            if (ext.isNotBlank()) tagParts += ext
+            if (height != null && height > 0) tagParts += "${height}p"
+            if (!folderHint.isNullOrBlank()) tagParts += folderHint
+            tagParts += if (isAudioOnly) "offline-audio" else "offline-video"
+
+            ExtractedLocalMediaInfo(
+                durationMs = durationMs,
+                thumbPath = thumbPath,
+                embeddedTitle = embeddedTitle,
+                channelName = artist?.takeIf { it.isNotBlank() },
+                generatedDescription = generatedDesc,
+                generatedTags = tagParts.distinct().joinToString(", ")
+            )
         } catch (_: Throwable) {
-            0L to null
+            ExtractedLocalMediaInfo(
+                durationMs = 0L,
+                thumbPath = null,
+                embeddedTitle = null,
+                channelName = null,
+                generatedDescription = "Local media file: $fileName (${storageTarget.label})",
+                generatedTags = if (ext.isNotBlank()) "$ext, offline-media" else "offline-media"
+            )
         } finally {
             runCatching { retriever.release() }
         }

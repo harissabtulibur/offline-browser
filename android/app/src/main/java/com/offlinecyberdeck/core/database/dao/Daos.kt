@@ -192,6 +192,9 @@ interface MediaDao {
 
     @Query("SELECT m.* FROM media_items m INNER JOIN playlist_media_cross_ref p ON m.id = p.mediaId WHERE p.playlistId = :playlistId ORDER BY p.position ASC")
     fun observePlaylistItems(playlistId: String): Flow<List<MediaItemEntity>>
+
+    @Query("SELECT * FROM playlist_media_cross_ref")
+    suspend fun getAllPlaylistCrossRefs(): List<PlaylistMediaCrossRef>
 }
 
 @Dao

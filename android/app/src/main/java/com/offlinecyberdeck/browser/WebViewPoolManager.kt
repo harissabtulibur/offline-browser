@@ -2,14 +2,22 @@ package com.offlinecyberdeck.browser
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
+import android.net.Uri
 import android.net.http.SslError
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.Message
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
+import android.webkit.JsResult
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
 import android.webkit.URLUtil
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -24,11 +32,17 @@ data class WebViewCallbacks(
     val onPageFinished: (tabId: String, url: String, title: String, canBack: Boolean, canForward: Boolean) -> Unit,
     val onProgressChanged: (tabId: String, progress: Int) -> Unit,
     val onTitleChanged: (tabId: String, title: String) -> Unit,
+    val onFaviconChanged: (tabId: String, favicon: Bitmap?) -> Unit,
     val onSslErrorBlocked: (tabId: String, url: String, reason: String) -> Unit,
     val onExternalSchemeRequested: (tabId: String, uriString: String) -> Unit,
     val onDownloadRequested: (url: String, fileName: String, mimeType: String) -> Unit,
     val onSitePermissionPrompt: (tabId: String, origin: String, resources: List<String>, request: PermissionRequest) -> Unit,
-    val onFindMatchesUpdated: (tabId: String, activeOrdinal: Int, count: Int) -> Unit
+    val onFindMatchesUpdated: (tabId: String, activeOrdinal: Int, count: Int) -> Unit,
+    val onLinkLongPressed: (tabId: String, linkUrl: String?, imageUrl: String?) -> Unit,
+    val onFileChooserRequested: (callback: ValueCallback<Array<Uri>>, acceptTypes: Array<String>) -> Unit,
+    val onShowCustomView: (view: View, callback: WebChromeClient.CustomViewCallback) -> Unit,
+    val onHideCustomView: () -> Unit,
+    val onJsDialog: (tabId: String, isConfirm: Boolean, message: String, result: JsResult) -> Unit
 )
 
 class WebViewPoolManager(
@@ -50,11 +64,12 @@ class WebViewPoolManager(
         isIncognito: Boolean,
         desktopMode: Boolean,
         javaScriptEnabled: Boolean,
-        forceDarkWeb: Boolean
+        forceDarkWeb: Boolean,
+        textZoom: Int = 100
     ): WebView {
         val existing = liveViews[tabId]
         if (existing != null) {
-            applyRuntimeSettings(existing, desktopMode, javaScriptEnabled, forceDarkWeb)
+            applyRuntimeSettings(existing, desktopMode, javaScriptEnabled, forceDarkWeb, textZoom)
             existing.onResume()
             return existing
         }
@@ -66,7 +81,8 @@ class WebViewPoolManager(
             isIncognito = isIncognito,
             desktopMode = desktopMode,
             javaScriptEnabled = javaScriptEnabled,
-            forceDarkWeb = forceDarkWeb
+            forceDarkWeb = forceDarkWeb,
+            textZoom = textZoom
         )
         liveViews[tabId] = webView
 
@@ -80,6 +96,14 @@ class WebViewPoolManager(
     }
 
     fun getLiveWebView(tabId: String): WebView? = liveViews[tabId]
+
+    fun getLiveCount(): Int = liveViews.size
+
+    fun clearAllWebViewCaches() {
+        liveViews.values.forEach { view ->
+            runCatching { view.clearCache(true) }
+        }
+    }
 
     fun pauseInactiveTabs(activeTabId: String) {
         liveViews.forEach { (id, view) ->
@@ -144,7 +168,8 @@ class WebViewPoolManager(
         isIncognito: Boolean,
         desktopMode: Boolean,
         javaScriptEnabled: Boolean,
-        forceDarkWeb: Boolean
+        forceDarkWeb: Boolean,
+        textZoom: Int
     ): WebView {
         return WebView(context).apply {
             layoutParams = ViewGroup.LayoutParams(
@@ -173,7 +198,7 @@ class WebViewPoolManager(
                 cacheMode = if (isIncognito) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
             }
 
-            applyRuntimeSettings(this, desktopMode, javaScriptEnabled, forceDarkWeb)
+            applyRuntimeSettings(this, desktopMode, javaScriptEnabled, forceDarkWeb, textZoom)
 
             if (isIncognito) {
                 CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
@@ -192,6 +217,40 @@ class WebViewPoolManager(
                 }
             })
 
+            setOnLongClickListener { view ->
+                val wv = view as? WebView ?: return@setOnLongClickListener false
+                val hit = wv.hitTestResult
+                when (hit.type) {
+                    WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
+                        val url = hit.extra
+                        if (!url.isNullOrBlank()) {
+                            callbacks.onLinkLongPressed(tabId, url, null)
+                            true
+                        } else false
+                    }
+                    WebView.HitTestResult.IMAGE_TYPE -> {
+                        val imgUrl = hit.extra
+                        if (!imgUrl.isNullOrBlank()) {
+                            callbacks.onLinkLongPressed(tabId, null, imgUrl)
+                            true
+                        } else false
+                    }
+                    WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
+                        val handler = Handler(Looper.getMainLooper()) { msg ->
+                            val href = msg.data.getString("url")
+                            val src = msg.data.getString("src") ?: hit.extra
+                            if (!href.isNullOrBlank() || !src.isNullOrBlank()) {
+                                callbacks.onLinkLongPressed(tabId, href, src)
+                            }
+                            true
+                        }
+                        wv.requestFocusNodeHref(Message.obtain(handler))
+                        true
+                    }
+                    else -> false
+                }
+            }
+
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(
                     view: WebView?,
@@ -206,7 +265,7 @@ class WebViewPoolManager(
                     return true
                 }
 
-                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
                     if (!url.isNullOrBlank()) {
                         callbacks.onPageStarted(tabId, url)
@@ -231,7 +290,6 @@ class WebViewPoolManager(
                     handler: SslErrorHandler?,
                     error: SslError?
                 ) {
-                    // Security-first: never proceed past an invalid SSL certificate
                     handler?.cancel()
                     val reason = when (error?.primaryError) {
                         SslError.SSL_EXPIRED -> "Certificate expired"
@@ -255,12 +313,65 @@ class WebViewPoolManager(
                     }
                 }
 
+                override fun onReceivedIcon(view: WebView?, icon: Bitmap?) {
+                    val scaled = icon?.let {
+                        runCatching { Bitmap.createScaledBitmap(it, 36, 36, true) }.getOrNull()
+                    }
+                    callbacks.onFaviconChanged(tabId, scaled)
+                }
+
                 override fun onPermissionRequest(request: PermissionRequest?) {
                     if (request == null) return
                     val origin = request.origin?.toString().orEmpty()
                     val res = request.resources?.toList().orEmpty()
-                    // Never silently grant sensitive permissions
                     callbacks.onSitePermissionPrompt(tabId, origin, res, request)
+                }
+
+                override fun onShowFileChooser(
+                    webView: WebView?,
+                    filePathCallback: ValueCallback<Array<Uri>>?,
+                    fileChooserParams: FileChooserParams?
+                ): Boolean {
+                    if (filePathCallback == null) return false
+                    val accept = fileChooserParams?.acceptTypes
+                        ?.filter { it.isNotBlank() }
+                        ?.toTypedArray()
+                        ?.takeIf { it.isNotEmpty() }
+                        ?: arrayOf("*/*")
+                    callbacks.onFileChooserRequested(filePathCallback, accept)
+                    return true
+                }
+
+                override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                    if (view != null && callback != null) {
+                        callbacks.onShowCustomView(view, callback)
+                    }
+                }
+
+                override fun onHideCustomView() {
+                    callbacks.onHideCustomView()
+                }
+
+                override fun onJsAlert(
+                    view: WebView?,
+                    url: String?,
+                    message: String?,
+                    result: JsResult?
+                ): Boolean {
+                    if (result == null) return false
+                    callbacks.onJsDialog(tabId, false, message.orEmpty(), result)
+                    return true
+                }
+
+                override fun onJsConfirm(
+                    view: WebView?,
+                    url: String?,
+                    message: String?,
+                    result: JsResult?
+                ): Boolean {
+                    if (result == null) return false
+                    callbacks.onJsDialog(tabId, true, message.orEmpty(), result)
+                    return true
                 }
             }
         }
@@ -271,9 +382,11 @@ class WebViewPoolManager(
         webView: WebView,
         desktopMode: Boolean,
         javaScriptEnabled: Boolean,
-        forceDarkWeb: Boolean
+        forceDarkWeb: Boolean,
+        textZoom: Int
     ) {
         webView.settings.javaScriptEnabled = javaScriptEnabled
+        webView.settings.textZoom = textZoom.coerceIn(50, 200)
         val defaultUa = WebSettings.getDefaultUserAgent(context)
         webView.settings.userAgentString = if (desktopMode) {
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"

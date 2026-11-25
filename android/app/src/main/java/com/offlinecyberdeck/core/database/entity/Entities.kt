@@ -3,6 +3,7 @@ package com.offlinecyberdeck.core.database.entity
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.offlinecyberdeck.core.model.AccentColorPreset
 import com.offlinecyberdeck.core.model.ArchiveStatus
 import com.offlinecyberdeck.core.model.DownloadStatus
 import com.offlinecyberdeck.core.model.DuplicatePolicy
@@ -181,8 +182,8 @@ data class RecentSearchEntity(
 data class AppSettingsEntity(
     @PrimaryKey val id: Int = 1,
     val themeMode: ThemeMode = ThemeMode.DARK,
-    val searchEngine: SearchEngineOption = SearchEngineOption.DUCKDUCKGO,
-    val customSearchTemplate: String = "https://duckduckgo.com/?q=%s",
+    val searchEngine: SearchEngineOption = SearchEngineOption.GOOGLE,
+    val customSearchTemplate: String = "https://www.google.com/search?q=%s",
     val showStatusStrip: Boolean = true,
     val showRecentOnNewTab: Boolean = true,
     val defaultDesktopMode: Boolean = false,
@@ -198,5 +199,22 @@ data class AppSettingsEntity(
     val recordHistory: Boolean = true,
     val deckDriveTreeUri: String? = null,
     val deckDriveLabel: String? = null,
-    val downloadFolderUri: String? = null
+    val downloadFolderUri: String? = null,
+    val developerModeEnabled: Boolean = true,
+    val accentPreset: AccentColorPreset = AccentColorPreset.CYBER_CYAN,
+    val brightnessOverrideEnabled: Boolean = false,
+    val screenBrightnessPercent: Int = 80,
+    val nightDimmerPercent: Int = 0,
+    val immersiveFullscreen: Boolean = false,
+    val hideNavChromeInBrowser: Boolean = false,
+    val addressBarHeightDp: Int = 40,
+    val addressBarFontSp: Int = 14,
+    val addressBarCornerDp: Int = 10,
+    val toolbarButtonSizeDp: Int = 34,
+    val showTabStrip: Boolean = true,
+    val bottomAddressBar: Boolean = false,
+    val uiFontScale: Float = 1.0f,
+    val webViewTextZoom: Int = 100,
+    val webViewDebuggingEnabled: Boolean = false,
+    val showDevHud: Boolean = false
 )

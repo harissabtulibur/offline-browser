@@ -3,9 +3,13 @@ package com.offlinecyberdeck.settings
 import android.content.Intent
 import android.webkit.CookieManager
 import android.webkit.WebStorage
+import android.webkit.WebView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,8 +17,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -36,6 +43,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
@@ -44,6 +53,7 @@ import com.offlinecyberdeck.BuildConfig
 import com.offlinecyberdeck.CyberDeckApplication
 import com.offlinecyberdeck.core.database.entity.AppSettingsEntity
 import com.offlinecyberdeck.core.format.Formatters
+import com.offlinecyberdeck.core.model.AccentColorPreset
 import com.offlinecyberdeck.core.model.SearchEngineOption
 import com.offlinecyberdeck.core.model.StorageDashboardStats
 import com.offlinecyberdeck.core.model.StorageTarget
@@ -61,6 +71,8 @@ fun SettingsScreen(
 ) {
     val settings by app.settingsRepository.settingsFlow
         .collectAsStateWithLifecycle(initialValue = AppSettingsEntity())
+    val siteSettings by app.database.siteSettingDao().observeAll()
+        .collectAsStateWithLifecycle(initialValue = emptyList())
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
@@ -256,10 +268,260 @@ fun SettingsScreen(
             }
         }
 
+        // DEVELOPER & DISPLAY OPTIONS
+        item {
+            SectionCard("Developer & Display Options") {
+                SettingSwitchRow(
+                    title = "Enable Developer Options",
+                    subtitle = "Unlocks HTML Source Inspector, Dev HUD, and WebView debugging",
+                    checked = settings.developerModeEnabled,
+                    onCheckedChange = { v ->
+                        scope.launch { app.settingsRepository.updateSettings { it.copy(developerModeEnabled = v) } }
+                    }
+                )
+
+                Text("Accent Color Palette", style = MaterialTheme.typography.titleSmall)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    AccentColorPreset.entries.forEach { preset ->
+                        FilterChip(
+                            selected = settings.accentPreset == preset,
+                            onClick = {
+                                scope.launch { app.settingsRepository.updateSettings { it.copy(accentPreset = preset) } }
+                            },
+                            leadingIcon = {
+                                Box(
+                                    modifier = Modifier
+                                        .size(12.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(preset.darkPrimaryArgb))
+                                )
+                            },
+                            label = { Text(preset.label) }
+                        )
+                    }
+                }
+
+                SettingSwitchRow(
+                    title = "Override Screen Brightness",
+                    subtitle = "Controls in-app window brightness independently from system auto",
+                    checked = settings.brightnessOverrideEnabled,
+                    onCheckedChange = { v ->
+                        scope.launch { app.settingsRepository.updateSettings { it.copy(brightnessOverrideEnabled = v) } }
+                    }
+                )
+                if (settings.brightnessOverrideEnabled) {
+                    Text("App Screen Brightness: ${settings.screenBrightnessPercent}%")
+                    Slider(
+                        value = settings.screenBrightnessPercent.toFloat(),
+                        onValueChange = { v ->
+                            scope.launch {
+                                app.settingsRepository.updateSettings {
+                                    it.copy(screenBrightnessPercent = v.roundToInt().coerceIn(10, 100))
+                                }
+                            }
+                        },
+                        valueRange = 10f..100f
+                    )
+                }
+
+                Text("Extra Night Dimmer Overlay: ${settings.nightDimmerPercent}%")
+                Slider(
+                    value = settings.nightDimmerPercent.toFloat(),
+                    onValueChange = { v ->
+                        scope.launch {
+                            app.settingsRepository.updateSettings {
+                                it.copy(nightDimmerPercent = v.roundToInt().coerceIn(0, 65))
+                            }
+                        }
+                    },
+                    valueRange = 0f..65f
+                )
+
+                SettingSwitchRow(
+                    title = "Immersive Fullscreen Mode",
+                    subtitle = "Hides Android status bar & system navigation bars (swipe edge to reveal)",
+                    checked = settings.immersiveFullscreen,
+                    onCheckedChange = { v ->
+                        scope.launch { app.settingsRepository.updateSettings { it.copy(immersiveFullscreen = v) } }
+                    }
+                )
+                SettingSwitchRow(
+                    title = "Hide App Navigation Bar in Browser",
+                    subtitle = "Maximizes web viewport height; use 'Exit Full' pill or menu to return",
+                    checked = settings.hideNavChromeInBrowser,
+                    onCheckedChange = { v ->
+                        scope.launch { app.settingsRepository.updateSettings { it.copy(hideNavChromeInBrowser = v) } }
+                    }
+                )
+
+                SettingSwitchRow(
+                    title = "Bottom Address Bar",
+                    subtitle = "Moves browser toolbar & URL bar to bottom for comfortable thumb reach",
+                    checked = settings.bottomAddressBar,
+                    onCheckedChange = { v ->
+                        scope.launch { app.settingsRepository.updateSettings { it.copy(bottomAddressBar = v) } }
+                    }
+                )
+                SettingSwitchRow(
+                    title = "Show Browser Tab Strip",
+                    subtitle = "Display horizontal tab bar above/below address bar",
+                    checked = settings.showTabStrip,
+                    onCheckedChange = { v ->
+                        scope.launch { app.settingsRepository.updateSettings { it.copy(showTabStrip = v) } }
+                    }
+                )
+
+                Text("Address Bar Height: ${settings.addressBarHeightDp} dp")
+                Slider(
+                    value = settings.addressBarHeightDp.toFloat(),
+                    onValueChange = { v ->
+                        scope.launch {
+                            app.settingsRepository.updateSettings {
+                                it.copy(addressBarHeightDp = v.roundToInt().coerceIn(30, 64))
+                            }
+                        }
+                    },
+                    valueRange = 30f..64f
+                )
+
+                Text("Address Bar Text Size: ${settings.addressBarFontSp} sp")
+                Slider(
+                    value = settings.addressBarFontSp.toFloat(),
+                    onValueChange = { v ->
+                        scope.launch {
+                            app.settingsRepository.updateSettings {
+                                it.copy(addressBarFontSp = v.roundToInt().coerceIn(11, 20))
+                            }
+                        }
+                    },
+                    valueRange = 11f..20f,
+                    steps = 8
+                )
+
+                Text("Address Bar Corner Radius: ${settings.addressBarCornerDp} dp")
+                Slider(
+                    value = settings.addressBarCornerDp.toFloat(),
+                    onValueChange = { v ->
+                        scope.launch {
+                            app.settingsRepository.updateSettings {
+                                it.copy(addressBarCornerDp = v.roundToInt().coerceIn(0, 24))
+                            }
+                        }
+                    },
+                    valueRange = 0f..24f
+                )
+
+                Text("Toolbar Icon Size: ${settings.toolbarButtonSizeDp} dp")
+                Slider(
+                    value = settings.toolbarButtonSizeDp.toFloat(),
+                    onValueChange = { v ->
+                        scope.launch {
+                            app.settingsRepository.updateSettings {
+                                it.copy(toolbarButtonSizeDp = v.roundToInt().coerceIn(26, 44))
+                            }
+                        }
+                    },
+                    valueRange = 26f..44f
+                )
+
+                Text("Global UI Font Scale: ${(settings.uiFontScale * 100).roundToInt()}%")
+                Slider(
+                    value = settings.uiFontScale,
+                    onValueChange = { v ->
+                        val snapped = ((v * 20f).roundToInt() / 20f).coerceIn(0.85f, 1.25f)
+                        scope.launch {
+                            app.settingsRepository.updateSettings { it.copy(uiFontScale = snapped) }
+                        }
+                    },
+                    valueRange = 0.85f..1.25f,
+                    steps = 7
+                )
+
+                Text("WebView Page Text Zoom: ${settings.webViewTextZoom}%")
+                Slider(
+                    value = settings.webViewTextZoom.toFloat(),
+                    onValueChange = { v ->
+                        val snapped = ((v / 5f).roundToInt() * 5).coerceIn(75, 150)
+                        scope.launch {
+                            app.settingsRepository.updateSettings { it.copy(webViewTextZoom = snapped) }
+                        }
+                    },
+                    valueRange = 75f..150f,
+                    steps = 14
+                )
+
+                if (settings.developerModeEnabled) {
+                    SettingSwitchRow(
+                        title = "Developer HUD Overlay",
+                        subtitle = "Shows live RAM heap, active WebView count, and screen dp",
+                        checked = settings.showDevHud,
+                        onCheckedChange = { v ->
+                            scope.launch { app.settingsRepository.updateSettings { it.copy(showDevHud = v) } }
+                        }
+                    )
+                    SettingSwitchRow(
+                        title = "WebView USB Debugging",
+                        subtitle = "Allows chrome://inspect over ADB from PC",
+                        checked = settings.webViewDebuggingEnabled,
+                        onCheckedChange = { v ->
+                            scope.launch { app.settingsRepository.updateSettings { it.copy(webViewDebuggingEnabled = v) } }
+                        }
+                    )
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        runCatching {
+                            WebView(context).apply {
+                                clearCache(true)
+                                destroy()
+                            }
+                        }
+                        onShowMessage("WebView HTTP disk cache cleared")
+                    }) {
+                        Text("Clear Web Cache")
+                    }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            app.settingsRepository.updateSettings {
+                                it.copy(
+                                    accentPreset = AccentColorPreset.CYBER_CYAN,
+                                    brightnessOverrideEnabled = false,
+                                    screenBrightnessPercent = 80,
+                                    nightDimmerPercent = 0,
+                                    immersiveFullscreen = false,
+                                    hideNavChromeInBrowser = false,
+                                    addressBarHeightDp = 40,
+                                    addressBarFontSp = 14,
+                                    addressBarCornerDp = 10,
+                                    toolbarButtonSizeDp = 34,
+                                    showTabStrip = true,
+                                    bottomAddressBar = false,
+                                    uiFontScale = 1.0f,
+                                    webViewTextZoom = 100,
+                                    showDevHud = false,
+                                    webViewDebuggingEnabled = false
+                                )
+                            }
+                            onShowMessage("Display & developer options reset to defaults")
+                        }
+                    }) {
+                        Text("Reset Display")
+                    }
+                }
+            }
+        }
+
         // SEARCH ENGINE
         item {
             SectionCard("Search Engine") {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     SearchEngineOption.entries.forEach { opt ->
                         FilterChip(
                             selected = settings.searchEngine == opt,
@@ -291,7 +553,7 @@ fun SettingsScreen(
                         app.settingsRepository.updateSettings {
                             it.copy(
                                 searchEngine = SearchEngineOption.CUSTOM,
-                                customSearchTemplate = customTemplateDraft.trim().ifBlank { SearchEngineOption.DUCKDUCKGO.templateUrl }
+                                customSearchTemplate = customTemplateDraft.trim().ifBlank { SearchEngineOption.GOOGLE.templateUrl }
                             )
                         }
                         onShowMessage("Search engine template saved")
@@ -409,6 +671,35 @@ fun SettingsScreen(
                 )
                 Button(onClick = { confirmClearBrowsing = true }) {
                     Text("Clear Browsing History & Cookies")
+                }
+
+                if (siteSettings.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text("Per-Site Overrides (${siteSettings.size})", style = MaterialTheme.typography.titleSmall)
+                    siteSettings.forEach { site ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(site.host, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "JS: ${if (site.javaScriptEnabled) "ON" else "OFF"} • Desktop: ${if (site.desktopMode) "ON" else "OFF"}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    app.database.siteSettingDao().deleteHost(site.host)
+                                    onShowMessage("Reset overrides for ${site.host}")
+                                }
+                            }) {
+                                Text("Reset")
+                            }
+                        }
+                    }
                 }
             }
         }

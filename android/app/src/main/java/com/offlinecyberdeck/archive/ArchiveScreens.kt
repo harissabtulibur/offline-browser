@@ -44,6 +44,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +54,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -278,11 +280,18 @@ fun ArchiveReaderScreen(
     onOpenLiveUrl: (String) -> Unit
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     var page by remember { mutableStateOf<ArchivedPageEntity?>(null) }
     var html by remember { mutableStateOf<String?>(null) }
     var textReaderMode by remember { mutableStateOf(false) }
     var findQuery by remember { mutableStateOf("") }
     var showFind by remember { mutableStateOf(false) }
+
+    DisposableEffect(view) {
+        val prev = view.keepScreenOn
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = prev }
+    }
 
     LaunchedEffect(archiveId) {
         val loaded = app.database.archiveDao().getById(archiveId)

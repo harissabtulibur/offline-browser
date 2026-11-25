@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.offlinecyberdeck.core.database.dao.ArchiveDao
 import com.offlinecyberdeck.core.database.dao.BookmarkDao
 import com.offlinecyberdeck.core.database.dao.DownloadDao
@@ -28,6 +30,7 @@ import com.offlinecyberdeck.core.database.entity.PlaylistMediaCrossRef
 import com.offlinecyberdeck.core.database.entity.RecentSearchEntity
 import com.offlinecyberdeck.core.database.entity.SiteSettingEntity
 import com.offlinecyberdeck.core.database.entity.TabEntity
+import com.offlinecyberdeck.core.model.AccentColorPreset
 import com.offlinecyberdeck.core.model.ArchiveStatus
 import com.offlinecyberdeck.core.model.DownloadStatus
 import com.offlinecyberdeck.core.model.DuplicatePolicy
@@ -41,8 +44,11 @@ class CyberDeckConverters {
     @TypeConverter fun fromThemeMode(v: ThemeMode): String = v.name
     @TypeConverter fun toThemeMode(v: String): ThemeMode = enumValueOrDefault(v, ThemeMode.DARK)
 
+    @TypeConverter fun fromAccentPreset(v: AccentColorPreset): String = v.name
+    @TypeConverter fun toAccentPreset(v: String): AccentColorPreset = enumValueOrDefault(v, AccentColorPreset.CYBER_CYAN)
+
     @TypeConverter fun fromSearchEngine(v: SearchEngineOption): String = v.name
-    @TypeConverter fun toSearchEngine(v: String): SearchEngineOption = enumValueOrDefault(v, SearchEngineOption.DUCKDUCKGO)
+    @TypeConverter fun toSearchEngine(v: String): SearchEngineOption = enumValueOrDefault(v, SearchEngineOption.GOOGLE)
 
     @TypeConverter fun fromArchiveStatus(v: ArchiveStatus): String = v.name
     @TypeConverter fun toArchiveStatus(v: String): ArchiveStatus = enumValueOrDefault(v, ArchiveStatus.READER_SNAPSHOT)
@@ -81,7 +87,7 @@ class CyberDeckConverters {
         RecentSearchEntity::class,
         AppSettingsEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = true
 )
 @TypeConverters(CyberDeckConverters::class)
@@ -101,6 +107,28 @@ abstract class CyberDeckDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: CyberDeckDatabase? = null
 
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN developerModeEnabled INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN accentPreset TEXT NOT NULL DEFAULT 'CYBER_CYAN'")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN brightnessOverrideEnabled INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN screenBrightnessPercent INTEGER NOT NULL DEFAULT 80")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN nightDimmerPercent INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN immersiveFullscreen INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN hideNavChromeInBrowser INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN addressBarHeightDp INTEGER NOT NULL DEFAULT 40")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN addressBarFontSp INTEGER NOT NULL DEFAULT 14")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN addressBarCornerDp INTEGER NOT NULL DEFAULT 10")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN toolbarButtonSizeDp INTEGER NOT NULL DEFAULT 34")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN showTabStrip INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN bottomAddressBar INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN uiFontScale REAL NOT NULL DEFAULT 1.0")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN webViewTextZoom INTEGER NOT NULL DEFAULT 100")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN webViewDebuggingEnabled INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN showDevHud INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): CyberDeckDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -108,6 +136,7 @@ abstract class CyberDeckDatabase : RoomDatabase() {
                     CyberDeckDatabase::class.java,
                     "cyber_deck.db"
                 )
+                    .addMigrations(MIGRATION_1_2)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

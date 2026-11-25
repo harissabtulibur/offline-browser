@@ -1,7 +1,13 @@
 package com.offlinecyberdeck.browser
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.net.Uri
+import android.view.View
+import android.webkit.JsResult
 import android.webkit.PermissionRequest
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -58,6 +64,22 @@ data class PendingDownloadPrompt(
     val mimeType: String
 )
 
+data class PendingLongPressLink(
+    val linkUrl: String?,
+    val imageUrl: String?
+)
+
+data class PendingJsDialog(
+    val isConfirm: Boolean,
+    val message: String,
+    val result: JsResult
+)
+
+data class PendingFileChooser(
+    val callback: ValueCallback<Array<Uri>>,
+    val acceptTypes: Array<String>
+)
+
 class BrowserViewModel(private val app: CyberDeckApplication) : ViewModel() {
 
     private val _tabs = MutableStateFlow<List<BrowserTabUi>>(emptyList())
@@ -87,11 +109,30 @@ class BrowserViewModel(private val app: CyberDeckApplication) : ViewModel() {
     private val _pendingDownloadPrompt = MutableStateFlow<PendingDownloadPrompt?>(null)
     val pendingDownloadPrompt: StateFlow<PendingDownloadPrompt?> = _pendingDownloadPrompt.asStateFlow()
 
+    private val _pendingLongPressLink = MutableStateFlow<PendingLongPressLink?>(null)
+    val pendingLongPressLink: StateFlow<PendingLongPressLink?> = _pendingLongPressLink.asStateFlow()
+
+    private val _pendingJsDialog = MutableStateFlow<PendingJsDialog?>(null)
+    val pendingJsDialog: StateFlow<PendingJsDialog?> = _pendingJsDialog.asStateFlow()
+
+    private val _pendingFileChooser = MutableStateFlow<PendingFileChooser?>(null)
+    val pendingFileChooser: StateFlow<PendingFileChooser?> = _pendingFileChooser.asStateFlow()
+
+    private val _fullscreenCustomView = MutableStateFlow<View?>(null)
+    val fullscreenCustomView: StateFlow<View?> = _fullscreenCustomView.asStateFlow()
+    private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
+
+    private val _tabFavicons = MutableStateFlow<Map<String, Bitmap>>(emptyMap())
+    val tabFavicons: StateFlow<Map<String, Bitmap>> = _tabFavicons.asStateFlow()
+
     private val _snackbarEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val snackbarEvents = _snackbarEvents.asSharedFlow()
 
     private val _isArchiving = MutableStateFlow(false)
     val isArchiving: StateFlow<Boolean> = _isArchiving.asStateFlow()
+
+    private val _inspectedHtmlSource = MutableStateFlow<String?>(null)
+    val inspectedHtmlSource: StateFlow<String?> = _inspectedHtmlSource.asStateFlow()
 
     val settings = app.settingsRepository.settingsFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, AppSettingsEntity())
@@ -151,6 +192,11 @@ class BrowserViewModel(private val app: CyberDeckApplication) : ViewModel() {
             onTitleChanged = { tabId, title ->
                 updateTab(tabId) { it.copy(title = title) }
             },
+            onFaviconChanged = { tabId, favicon ->
+                if (favicon != null) {
+                    _tabFavicons.update { it + (tabId to favicon) }
+                }
+            },
             onSslErrorBlocked = { tabId, url, reason ->
                 updateTab(tabId) {
                     it.copy(
@@ -172,6 +218,24 @@ class BrowserViewModel(private val app: CyberDeckApplication) : ViewModel() {
                 if (_activeTabId.value == tabId) {
                     _findStats.value = activeOrdinal to count
                 }
+            },
+            onLinkLongPressed = { _, linkUrl, imageUrl ->
+                _pendingLongPressLink.value = PendingLongPressLink(linkUrl, imageUrl)
+            },
+            onFileChooserRequested = { callback, acceptTypes ->
+                _pendingFileChooser.value?.callback?.onReceiveValue(null)
+                _pendingFileChooser.value = PendingFileChooser(callback, acceptTypes)
+            },
+            onShowCustomView = { view, callback ->
+                fullscreenCallback = callback
+                _fullscreenCustomView.value = view
+            },
+            onHideCustomView = {
+                _fullscreenCustomView.value = null
+                fullscreenCallback = null
+            },
+            onJsDialog = { _, isConfirm, message, result ->
+                _pendingJsDialog.value = PendingJsDialog(isConfirm, message, result)
             }
         )
     )
@@ -286,6 +350,7 @@ class BrowserViewModel(private val app: CyberDeckApplication) : ViewModel() {
         val current = _tabs.value
         val closing = current.firstOrNull { it.id == tabId } ?: return
         webViewPool.destroyTab(tabId, closing.isIncognito)
+        _tabFavicons.update { it - tabId }
 
         val remaining = current.filterNot { it.id == tabId }
         if (closing.isIncognito && remaining.none { it.isIncognito }) {
@@ -364,7 +429,8 @@ class BrowserViewModel(private val app: CyberDeckApplication) : ViewModel() {
                 isIncognito = tab.isIncognito,
                 desktopMode = next,
                 javaScriptEnabled = tab.javaScriptEnabled,
-                forceDarkWeb = settings.value.themeMode != ThemeMode.LIGHT
+                forceDarkWeb = settings.value.themeMode != ThemeMode.LIGHT,
+                textZoom = settings.value.webViewTextZoom
             )
             webView.reload()
         }
@@ -526,11 +592,77 @@ class BrowserViewModel(private val app: CyberDeckApplication) : ViewModel() {
         val pending = _pendingDownloadPrompt.value ?: return
         _pendingDownloadPrompt.value = null
         if (confirm) {
-            viewModelScope.launch {
-                app.downloadRepository.enqueueDownload(pending.url, pending.fileName, pending.mimeType)
-                _snackbarEvents.tryEmit("Download started: ${pending.fileName}")
+            startDirectDownload(pending.url, pending.fileName, pending.mimeType)
+        }
+    }
+
+    fun startDirectDownload(url: String, fileName: String? = null, mimeType: String? = null) {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            _snackbarEvents.tryEmit("Only http/https links can be downloaded.")
+            return
+        }
+        viewModelScope.launch {
+            val dl = app.downloadRepository.enqueueDownload(url, fileName, mimeType)
+            _snackbarEvents.tryEmit("Download started: ${dl.fileName}")
+        }
+    }
+
+    fun dismissLongPressLink() {
+        _pendingLongPressLink.value = null
+    }
+
+    fun resolveJsDialog(confirm: Boolean) {
+        val pending = _pendingJsDialog.value ?: return
+        runCatching {
+            if (confirm) pending.result.confirm() else pending.result.cancel()
+        }
+        _pendingJsDialog.value = null
+    }
+
+    fun resolveFileChooser(uris: Array<Uri>?) {
+        val pending = _pendingFileChooser.value ?: return
+        runCatching {
+            pending.callback.onReceiveValue(uris)
+        }
+        _pendingFileChooser.value = null
+    }
+
+    fun exitFullscreenCustomView() {
+        runCatching { fullscreenCallback?.onCustomViewHidden() }
+        fullscreenCallback = null
+        _fullscreenCustomView.value = null
+    }
+
+    fun toggleBrowserFullscreen() {
+        viewModelScope.launch {
+            val current = app.settingsRepository.getSettings()
+            val next = !(current.immersiveFullscreen || current.hideNavChromeInBrowser)
+            app.settingsRepository.updateSettings {
+                it.copy(
+                    immersiveFullscreen = next,
+                    hideNavChromeInBrowser = next
+                )
             }
         }
+    }
+
+    fun inspectCurrentPageHtml() {
+        val tab = activeTab.value ?: return
+        if (tab.url == "about:cyberdeck") {
+            _snackbarEvents.tryEmit("Open a webpage first to inspect HTML source.")
+            return
+        }
+        val webView = webViewPool.getLiveWebView(tab.id) ?: return
+        webView.evaluateJavascript(
+            "(function(){ return document.documentElement ? document.documentElement.outerHTML : ''; })();"
+        ) { raw ->
+            val html = decodeJsString(raw)
+            _inspectedHtmlSource.value = html.ifBlank { "<!-- Empty HTML -->" }.take(120_000)
+        }
+    }
+
+    fun dismissInspectedHtml() {
+        _inspectedHtmlSource.value = null
     }
 
     private fun handleWebDownloadRequest(url: String, fileName: String, mimeType: String) {

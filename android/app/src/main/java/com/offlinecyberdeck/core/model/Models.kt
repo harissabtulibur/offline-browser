@@ -6,14 +6,30 @@ enum class ThemeMode(val label: String) {
     SYSTEM("System")
 }
 
+enum class AccentColorPreset(
+    val label: String,
+    val darkPrimaryArgb: Long,
+    val lightPrimaryArgb: Long,
+    val darkContainerArgb: Long,
+    val lightContainerArgb: Long
+) {
+    CYBER_CYAN("Cyber Cyan", 0xFF22D3EE, 0xFF0E7490, 0xFF0E3A46, 0xFFCFFAFE),
+    EMERALD("Emerald", 0xFF10B981, 0xFF047857, 0xFF064E3B, 0xFFD1FAE5),
+    AMBER("Amber", 0xFFF59E0B, 0xFFB45309, 0xFF451A03, 0xFFFEF3C7),
+    CRIMSON("Crimson", 0xFFEF4444, 0xFFB91C1C, 0xFF450A0A, 0xFFFEE2E2),
+    VIOLET("Violet", 0xFFA855F7, 0xFF7E22CE, 0xFF3B0764, 0xFFF3E8FF),
+    SLATE_MONO("Mono", 0xFFE2E8F0, 0xFF334155, 0xFF1E293B, 0xFFE2E8F0)
+}
+
 enum class SearchEngineOption(
     val label: String,
     val templateUrl: String
 ) {
+    GOOGLE("Google", "https://www.google.com/search?q=%s"),
     DUCKDUCKGO("DuckDuckGo", "https://duckduckgo.com/?q=%s"),
     STARTPAGE("Startpage", "https://www.startpage.com/sp/search?query=%s"),
     WIKIPEDIA("Wikipedia", "https://en.wikipedia.org/w/index.php?search=%s"),
-    CUSTOM("Custom", "https://duckduckgo.com/?q=%s")
+    CUSTOM("Custom", "https://www.google.com/search?q=%s")
 }
 
 enum class ArchiveStatus(val label: String) {
